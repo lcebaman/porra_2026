@@ -485,20 +485,39 @@ def porra_bonus(b: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def inject_into_porra(html_path: Path, user_data: dict[str, dict[str, Any]]) -> None:
+def inject_into_porra(html_path: Path, user_data: dict[str, dict[str, Any]],
+                      remove: list[str] | None = None) -> None:
     """Read-modify-write merge into the porra dashboard's `const DATA = {...};`.
 
-    Replaces/adds preds + bonus per user, keeps schedule/teams/players/alias,
-    and extends the players canonical-name map with unseen names so the
-    dashboard's goal-entry table stays unified."""
+    Replaces/adds preds + bonus per user, optionally removes participants,
+    keeps schedule/teams/players/alias, and extends the players
+    canonical-name map with unseen names so the dashboard's goal-entry
+    table stays unified."""
     doc = html_path.read_text(encoding="utf-8")
     i = doc.index(DATA_MARKER) + len(DATA_MARKER)
     data, end = json.JSONDecoder().raw_decode(doc, i)
 
+    removed: list[str] = []
+    for name in remove or []:
+        if name in data.get("users", []):
+            data["users"].remove(name)
+            data.get("preds", {}).pop(name, None)
+            data.get("bonus", {}).pop(name, None)
+            removed.append(name)
+        else:
+            import difflib
+            hint = difflib.get_close_matches(name, data.get("users", []), n=3, cutoff=0.5)
+            raise SystemExit(f"--remove: participant '{name}' not found in {html_path.name}. "
+                             f"Existing: {', '.join(data.get('users', []))}"
+                             + (f"  (did you mean: {', '.join(hint)}?)" if hint else ""))
+
     for user, d in user_data.items():
+        if user in removed:
+            print(f"  note: '{user}' is in --remove; skipping their file in this merge")
+            continue
         data.setdefault("preds", {})[user] = porra_preds(d["matches"])
         data.setdefault("bonus", {})[user] = porra_bonus(d["bonus"])
-    data["users"] = sorted(set(data.get("users", [])) | set(user_data))
+    data["users"] = sorted((set(data.get("users", [])) | set(user_data)) - set(removed))
 
     players = data.setdefault("players", {})
     alias = data.setdefault("alias", {})
@@ -538,6 +557,8 @@ def inject_into_porra(html_path: Path, user_data: dict[str, dict[str, Any]]) -> 
     html_path.write_text(new_doc, encoding="utf-8")
     print(f"Merged {len(user_data)} user(s) into {html_path}  "
           f"({len(data['users'])} total players; backup: {backup.name})")
+    if removed:
+        print(f"  Removed participant(s): {', '.join(removed)}")
     if aliased:
         print(f"  Name variants auto-aliased to existing players: {'; '.join(sorted(aliased))}")
     if added:
@@ -546,11 +567,14 @@ def inject_into_porra(html_path: Path, user_data: dict[str, dict[str, Any]]) -> 
 
 
 def inject_into_html(html_path: Path, user_data: dict[str, dict[str, Any]],
-                     payload: dict[str, Any]) -> None:
+                     payload: dict[str, Any], remove: list[str] | None = None) -> None:
     doc = html_path.read_text(encoding="utf-8")
     if DATA_MARKER in doc:
-        inject_into_porra(html_path, user_data)
+        inject_into_porra(html_path, user_data, remove)
         return
+    if remove:
+        raise SystemExit(f"--remove is only supported for the porra dashboard "
+                         f"(no `const DATA = ` block found in {html_path.name})")
     import html as html_mod
     blob = html_mod.escape(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     new_doc, n = PAYLOAD_RE.subn(lambda m: m.group(1) + blob + m.group(3), doc)
@@ -592,15 +616,24 @@ def gather_paths(inputs: list[Path]) -> list[Path]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Collect prediction Excels into a dashboard payload.")
-    ap.add_argument("inputs", nargs="+", type=Path,
-                    help="Folder(s) and/or individual prediction .xlsx files")
+    ap.add_argument("inputs", nargs="*", type=Path,
+                    help="Folder(s) and/or individual prediction .xlsx files "
+                         "(may be omitted when only using --remove)")
     ap.add_argument("-o", "--output", type=Path, default=Path("predictions.json"),
                     help="JSON payload output (default: predictions.json)")
     ap.add_argument("--inject", type=Path, default=None,
                     help="Dashboard HTML to update in place (payload block is replaced; .bak kept)")
+    ap.add_argument("--remove", action="append", default=[], metavar="NAME",
+                    help="Remove a participant from the dashboard (repeatable; requires --inject; "
+                         "exact name as shown in the leaderboard)")
     ap.add_argument("--template", type=Path, default=None,
                     help="Optional template/actual workbook to read the AssignThird table from once")
     args = ap.parse_args()
+
+    if args.remove and not args.inject:
+        raise SystemExit("--remove requires --inject DASHBOARD.html")
+    if not args.inputs and not args.remove:
+        ap.error("provide prediction files/folders, or --remove NAME --inject DASHBOARD.html")
 
     assignment_table = None
     if args.template:
@@ -608,10 +641,11 @@ def main() -> None:
         assignment_table = read_third_assignment(wbf)
         wbf.close()
 
-    files = gather_paths(args.inputs)
     user_data: dict[str, dict[str, Any]] = {}
     all_warnings: dict[str, list[str]] = {}
     failures: list[str] = []
+
+    files = gather_paths(args.inputs) if args.inputs else []
 
     for f in files:
         user = f.stem
@@ -629,19 +663,20 @@ def main() -> None:
             failures.append(f"{f.name}: {exc}")
             print(f"[FAIL] {f.name}: {exc}", file=sys.stderr)
 
-    if not user_data:
+    if files and not user_data:
         raise SystemExit("nothing extracted — all files failed")
 
     payload = build_payload(user_data, all_warnings)
     if failures:
         payload["errors"] = failures
 
-    args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"\nWrote {args.output}  ({args.output.stat().st_size/1024:.0f} KB, "
-          f"{len(user_data)} user(s))")
+    if user_data:
+        args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"\nWrote {args.output}  ({args.output.stat().st_size/1024:.0f} KB, "
+              f"{len(user_data)} user(s))")
 
     if args.inject:
-        inject_into_html(args.inject, user_data, payload)
+        inject_into_html(args.inject, user_data, payload, args.remove)
 
 
 if __name__ == "__main__":
