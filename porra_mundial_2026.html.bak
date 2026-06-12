@@ -725,11 +725,8 @@ function renderRoundChart(scores){
     DATA.users.forEach(u=>{ptsBy[u][m.round]+=scores[u].byMatch[m.no].pts;});
   });
   const max=Math.max(1,...DATA.users.flatMap(u=>rounds.map(rd=>ptsBy[u][rd])));
-  const W=920,L=40,R=10,T=14;
+  const W=920,H=300,L=40,R=10,T=14,B=46;
   const groupW=(W-L-R)/rounds.length, barW=Math.min(34,(groupW-18)/DATA.users.length);
-  const longest=Math.max(...DATA.users.map(u=>u.length));
-  const named=barW>=9;                      // rotated names fit under the bars
-  const B=named?Math.min(150,40+longest*4.6):46, H=named?254+B:300;
   const Y=v=>T+(H-T-B)*(1-v/max);
   let g="";
   niceTicks(max).forEach(v=>{g+=`<line class="gridline" x1="${L}" x2="${W-R}" y1="${Y(v)}" y2="${Y(v)}"/>
@@ -740,15 +737,11 @@ function renderRoundChart(scores){
       const v=ptsBy[u][rd], x=gx+ui*barW;
       g+=`<rect x="${x+1}" y="${Y(v)}" width="${barW-2}" height="${(H-T-B)-(Y(v)-T)}" fill="${uColor(u)}" rx="2"/>`;
       if(v>0)g+=`<text class="axis" x="${x+barW/2}" y="${Y(v)-4}" text-anchor="middle" fill="${uColor(u)}">${v}</text>`;
-      if(named){
-        const lx=x+barW/2+3, ly=H-B+14;
-        g+=`<text class="axis" x="${lx}" y="${ly}" text-anchor="end" font-size="11.5" fill="${uColor(u)}" transform="rotate(-45 ${lx} ${ly})">${esc(u)}</text>`;
-      }
     });
-    g+=`<text class="axis" x="${L+ri*groupW+groupW/2}" y="${H-8}" text-anchor="middle" font-size="13" font-weight="700">${esc(ROUND_LABEL[rd])}</text>`;
+    g+=`<text class="axis" x="${L+ri*groupW+groupW/2}" y="${H-26}" text-anchor="middle">${esc(ROUND_LABEL[rd])}</text>`;
   });
   el.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Puntos por ronda">${g}</svg>`;
-  legend("lg-round", named?[]:DATA.users.map(u=>({label:u,color:uColor(u)})));
+  legend("lg-round",DATA.users.map(u=>({label:u,color:uColor(u)})));
 }
 
 // Simple single-series horizontal bars (shared by the newer charts)
