@@ -1,269 +1,173 @@
-# OSU Collectives Sweep
+# Porra Mundial 2026 — Prediction Pool Toolkit
 
-Benchmarking toolkit for MPI collective operations across a sweep of
-**tasks-per-node** values and **stack configurations**, built around the
-OSU Micro-Benchmarks (OMB) collective tests. Designed for the modern
-UCX → UCC → OpenMPI stack (no hcoll).
+Two pieces, one workflow:
 
-The methodology mirrors the kind of latency-vs-ranks-per-node analysis
-shown in MPI vendor documentation for high-core-count CPUs, but extends
-it to compare multiple stack configurations side by side and produces a
-richer set of diagnostic plots.
-
-## Contents
-
-| File | Purpose |
+| File | Role |
 |---|---|
-| `run_osu_collectives_sweep.sh` | Slurm batch driver. Loops over configurations × ppn × collectives, writes one CSV per collective. |
-| `configs.txt` | Configuration matrix. Each line defines a `name | mca_args | env_vars` triplet. |
-| `plot_osu_sweep.py` | Plotter. Produces nine families of figures plus an HTML index. |
+| `porra_mundial_2026.html` | Self-contained dashboard. All participants' predictions are embedded; the master enters real results in the browser and every score, chart and ranking recalculates instantly. Works offline — just open it. |
+| `gather_predictions.py` | Collector. Extracts predictions from the participants' Excel template files, validates them, and injects them into the dashboard. The only tool you need to add, refresh or remove participants. |
 
-## Quick start
+Scoring lives **only** in the dashboard's JavaScript. The Python side never computes points — it extracts, resolves each participant's predicted bracket, validates, and injects. One source of truth for the rules.
 
-```bash
-# 1. Edit configs.txt and the SBATCH header in run_osu_collectives_sweep.sh
-#    (nodes, partition, account, cores per node).
-
-# 2. Point OSU_ROOT at your OMB install (or leave the default).
-export OSU_ROOT=$HOME/sw/osu-micro-benchmarks/7.5
-
-# 3. Submit.
-sbatch run_osu_collectives_sweep.sh
-
-# 4. Plot.
-python3 plot_osu_sweep.py results/<timestamp>_<jobid>/
-
-# 5. Browse.
-xdg-open results/<timestamp>_<jobid>/index.html
-```
-
-## The sweep matrix
-
-Three nested loops:
-
-```
-for config in configs.txt:           # outer: stack configuration
-    for ppn in PPN_LIST:             # middle: tasks per node
-        for collective in COLLECTIVES:   # inner: OSU collective
-            srun --ntasks-per-node=$ppn $OSU/$collective -m 8:1M
-```
-
-Default dimensions on a 192-core node, 16-node allocation:
-
-- **9 configurations** (see `configs.txt`): tuned baseline, HAN, UCC basic, UCC hier, UCC hier with algorithm overrides, UCC hier with UCX transport variations
-- **11 ppn values**: 1, 2, 4, 8, 16, 32, 64, 96, 128, 192, fully-populated
-- **6 collectives**: allreduce, alltoall, allgather, bcast, reduce, barrier
-- **~17 message sizes** per OSU run: 8 B to 1 MiB
-
-That's ~9 × 11 × 6 = 594 OSU invocations per submission. Plan ~30 minutes
-to ~6 hours depending on system size and `OSU_ITERATIONS`.
-
-## Configuration file format
-
-`configs.txt` is pipe-separated, three fields per line:
-
-```
-name | mca_args | env_vars
-```
-
-- `name` — short token; becomes a CSV column value and figure filename
-- `mca_args` — extra arguments passed to the launcher (typically `--mca key val` pairs)
-- `env_vars` — space-separated `KEY=VALUE` pairs exported before launch
-
-Lines starting with `#` and blank lines are ignored. Quoting is not supported,
-so keep values simple. Example:
-
-```
-ucc_hier_dc | --mca coll_ucc_enable 1 --mca coll_ucc_priority 100 | UCC_CLS=basic,hier UCC_TLS=ucp,self,shm UCX_TLS=dc,sm,self
-```
-
-The shipped `configs.txt` covers the meaningful axes of the UCX/UCC/OMPI stack:
-
-| Config | What it tests |
-|---|---|
-| `tuned_default` | OMPI tuned collectives, no UCC. Baseline. |
-| `tuned_han` | OMPI tuned + HAN hierarchical framework, no UCC. |
-| `ucc_basic_ucp` | UCC with flat collective layer over UCP transport. |
-| `ucc_hier` | UCC with hierarchical CL — the big lever for high ppn. |
-| `ucc_hier_knomial` | Force knomial allreduce algorithm. |
-| `ucc_hier_ring` | Force ring allreduce (BW-bound regime). |
-| `ucc_hier_rc` / `ucc_hier_dc` / `ucc_hier_rcx` | UCX transport sweep — RC vs DC vs accelerated RC. |
-
-## Tuning knobs in the driver script
-
-All overridable via environment variables, all with sensible defaults:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `OSU_ROOT` | `$HOME/sw/osu-micro-benchmarks/7.5` | Path to OMB install |
-| `CORES_PER_NODE` | `192` | Maximum ppn; tailor to your hardware |
-| `MSG_RANGE` | `8:1048576` | OSU `-m` argument: min:max bytes |
-| `OSU_ITERATIONS` | `1000` | Measurement iterations per data point |
-| `OSU_WARMUP` | `200` | Warmup iterations |
-| `CONFIG_FILE` | `configs.txt` | Configuration matrix |
-| `RESULTS_DIR` | `results/<timestamp>_<jobid>` | Output directory |
-| `LAUNCHER` | `srun` | `srun` or `mpirun` |
-
-`PPN_LIST` and `COLLECTIVES` are bash arrays edited at the top of the script
-rather than env vars.
-
-## Output
-
-Each submission writes one CSV per collective with the canonical schema:
-
-```
-config,collective,ppn,total_ranks,msg_size,avg_us,min_us,max_us,iterations
-```
-
-Plus per-(config × ppn × collective) raw OSU output files for forensic
-inspection, and one `.env` file per configuration recording all
-`OMPI_*` / `UCX_*` / `UCC_*` / `PMIX_*` / `SLURM_JOB_*` variables that
-were in scope at run time — so each result is reproducible.
-
-The configuration file is copied into the results directory as
-`configs.txt` so the run's matrix is self-documenting.
-
-## Plot families
-
-The plotter produces nine figure families per collective plus an HTML
-index. Each family answers a different question:
-
-| Family | Question | Notes |
-|---|---|---|
-| Absolute latency (vs ppn) | How does latency scale with ranks per node? | One figure per representative message size. |
-| Absolute latency (vs msg size) | What's the latency vs message size curve at each ppn? | Log-log; reveals eager/rendezvous protocol knees. |
-| Latency with min/max bands | Is this difference real or noise? | Shaded min/max around the avg curve. |
-| Speedup vs baseline | How much faster is each config than the baseline? | Dashed line at speedup=1.0 is the threshold of interest. |
-| Effective bandwidth | Are we saturating the fabric? | Collective-specific data factor (`2(N-1)/N · S` for allreduce, etc.). |
-| Scaling efficiency | How badly does latency degrade with ppn relative to ppn=1? | Decouples scaling from absolute speed. |
-| Cliff location | At what ppn does each config break? | Detected via the largest acceleration in log-space slope. |
-| Best-config map | Which config wins per (ppn, msg_size) cell? | Direct input for UCC/OMPI dispatch rules. |
-| Per-config heatmaps | Full (ppn × msg_size) latency landscape per config. | Shared colour scale across configs for direct comparison. |
-
-## Plotter invocation modes
-
-The plotter accepts three input shapes:
-
-```bash
-# 1. Sweep directory (the normal case):
-python3 plot_osu_sweep.py results/20260516_123456_12345
-
-# 2. A single CSV file (new schema or old schema without 'config' column):
-python3 plot_osu_sweep.py results/.../osu_allreduce.csv
-
-# 3. A raw OSU output file (auto-detected by '# OSU MPI ...' header):
-python3 plot_osu_sweep.py allreduce.out
-```
-
-Optional:
-
-```bash
---baseline <config_name>   # baseline for speedup plots
-                           # default: first config alphabetically
-```
-
-When loading old-schema or raw input, the plotter synthesises a `config`
-column and infers the collective from the filename. Speedup plots are
-silently skipped when only one configuration is present.
+---
 
 ## Requirements
 
-**Runtime (driver script):**
+- Python 3.10+ with `openpyxl` (`pip install openpyxl`)
+- A modern browser for the dashboard (no internet needed except for the optional in-browser "Añadir participantes" button, which fetches SheetJS from a CDN)
 
-- A Slurm cluster, or a system where `mpirun`/`srun` works directly
-- OpenMPI built with UCC support (or another MPI; adjust `--mca` flags accordingly)
-- UCX, UCC libraries installed
-- OSU Micro-Benchmarks 7.x built against the target MPI
-- bash 4+, awk
+---
 
-**Plotter:**
+## Quick reference
 
-- Python 3.9+
-- `pandas` ≥ 2.0 (uses post-1.5 idioms; avoids deprecated `applymap`)
-- `numpy`
-- `matplotlib`
+```bash
+# Collect every prediction file in a folder and update the dashboard
+python gather_predictions.py ./user_excels --inject porra_mundial_2026.html
+
+# Add one new participant (drop the file in the folder, or pass it directly)
+python gather_predictions.py extra/Luis.xlsx --inject porra_mundial_2026.html
+
+# Remove a participant (no Excel files needed)
+python gather_predictions.py --remove Sito --inject porra_mundial_2026.html
+
+# Extract only — write predictions.json, touch nothing else
+python gather_predictions.py ./user_excels -o predictions.json
+```
+
+---
+
+## Command-line options
+
+```
+usage: gather_predictions.py [-h] [-o OUTPUT] [--inject INJECT]
+                             [--remove NAME] [--template TEMPLATE]
+                             [inputs ...]
+```
+
+### `inputs` (positional, zero or more)
+
+Folders and/or individual prediction files, freely mixed.
+
+- A **folder** is scanned for `*.xlsx` / `*.xlsm`; Excel lock files (`~$...`) are skipped.
+- A **file** is taken as-is.
+- Duplicates (same file given twice, or via folder + path) are de-duplicated.
+- The participant's name is the **file stem**: `Paco.xlsx` → participant `Paco`. Rename the file to rename the participant.
+- May be omitted entirely when the run is removal-only (`--remove` + `--inject`).
+
+### `-o, --output FILE` (default: `predictions.json`)
+
+Where to write the extracted JSON payload — per-user resolved predictions for all 104 matches, Premios picks, and any validation warnings. This file is your audit trail of exactly what was read from each Excel; it is only written when at least one input file was processed.
+
+### `--inject DASHBOARD.html`
+
+Update the dashboard **in place**. The script locates the embedded `const DATA = {...}` block and performs a surgical merge:
+
+- **Replaces or adds** each collected participant's predictions (`preds`) and Premios picks (`bonus`). Re-running with the same files is idempotent.
+- **Preserves untouched**: the schedule, team list, every other participant's data, all HTML/CSS/JS, and any results the master has already entered (those live in the browser's localStorage, keyed by match number — regenerating the file never loses them).
+- **Extends the player-name canonical map** for Premios picks (see *Name canonicalization* below).
+- Writes a backup of the previous version next to the file: `DASHBOARD.html.bak`.
+
+Fallback: if the target HTML has no `const DATA` block but contains a `<script id="payload" type="application/json">` element (the older generic dashboard), that block is replaced wholesale instead.
+
+### `--remove NAME` (repeatable, requires `--inject`)
+
+Remove a participant from the dashboard: deletes them from `users`, `preds` and `bonus`. Properties:
+
+- **Repeatable**: `--remove Sito --remove Pepe` removes both in one run.
+- **Exact match** against the name shown in the leaderboard. A name that doesn't exist aborts the run with the full participant list and a "did you mean…?" suggestion — nothing is modified.
+- **Removal wins over re-adding**: if the removed participant's Excel is still among the inputs, their file is skipped with a note instead of silently re-importing them. (Still, tidy the folder so a later full re-collection doesn't bring them back.)
+- Can run standalone with no input files at all.
+- Real scores already entered are unaffected (they aren't stored per participant).
+- Caveat: a participant added through the dashboard's **in-browser** "Añadir participantes" button lives in the saved-progress JSON, not in the HTML. After removing them with the script, save fresh progress and don't re-import an old progress file, or they will reappear.
+
+### `--template WORKBOOK.xlsx`
+
+Read the `AssignThird` best-third-place assignment table once from a designated template/master workbook instead of from each participant's file. Normally unnecessary — every distributed template contains the table — but useful if a participant's file has a corrupted or stripped `AssignThird` sheet, or to shave a little time on large collections.
+
+### `-h, --help`
+
+Standard help.
+
+---
+
+## What extraction does per file
+
+For each participant the script:
+
+1. Reads the 72 group-stage scores plus all knockout scores and penalty shoot-outs from the `World Cup` sheet (fixed cell map matching the template geometry).
+2. Recomputes their **predicted bracket in Python** — group standings (pts / GD / GF / name tie-breakers), seeds `1A…2L`, best-thirds via the `AssignThird` combination table, and `W##` / `RU##` winner/runner-up chains — so knockout slots resolve to real team names even when Excel's cached formula values are missing.
+3. Reads Premios picks (5 goleadores, Bota/Guante/Balón de Oro) from the `Premios` sheet; the predicted tournament winner is derived from their Final.
+4. Validates and prints a per-user report:
+
+   | Warning | Meaning |
+   |---|---|
+   | `group match(es) without a score` | Empty group predictions (listed by match number) |
+   | `knockout match(es) without a score` | Empty knockout predictions |
+   | `knockout draw(s) without penalty resolution` | A KO draw with no penalties — **their bracket cannot advance past it**, so later rounds stay empty |
+   | `knockout slot(s) with unresolved team(s)` | A bracket slot whose team couldn't be determined |
+   | `empty Premios picks: …` | Which award picks are blank |
+   | `[FAIL] file: missing sheet '…'` | Not a valid prediction template; the file is skipped, the run continues |
+
+Best moment to run this: when a friend submits their file, while they can still fix it.
+
+---
+
+## Name canonicalization (Premios)
+
+Participants type player names freely, so the dashboard unifies them through a `players` map (canonical key → display name) and an `alias` map (typo → canonical key). During injection, any new name is resolved in this order:
+
+1. **Already known** (as player or alias) → nothing to do.
+2. **Full-name variant of an existing entry** (e.g. `Mikel Oyarzabal` where key `oyarzabal` exists) → auto-aliased.
+3. **Close typo** of an existing player (difflib similarity ≥ 0.92, e.g. `Erling Halland`) → auto-aliased, reported as `(fuzzy)`.
+4. **Genuinely new** → added to the map and reported as *"check for typos / add aliases if needed"*.
+
+Review that last list after each merge; for a typo too mangled for fuzzy matching, add one line to the dashboard's `alias` map by hand (same mechanism as the existing `"kulian mbappe": "kylian mbappe"` entry).
+
+---
+
+## The dashboard
+
+Open `porra_mundial_2026.html` in a browser. Tabs:
+
+- **Clasificación** — live leaderboard (Partidos / Cruces / Pases / Premios / Total) plus the point system.
+- **Resultados** — the master enters real scores here. Group fixtures are pre-filled; knockout slots get team dropdowns; penalty boxes appear automatically on KO draws. Everything recalculates on every keystroke.
+- **Premios** — enter each picked player's tournament goals (names already unified) and the real award winners; matches against picks are flagged automatically. The champion comes from the Final.
+- **Estadísticas** — nine charts: *La carrera por la porra* (cumulative points), *De dónde vienen los puntos*, *Aciertos en partidos jugados*, *Puntos por ronda*, *La montaña rusa* (rank evolution), *El campeón de cada uno* (consensus), *Ojo de halcón* (mean goal error), *Pases acertados por ronda*, and *Las sorpresas del torneo* (matches fewest people scored on).
+- **Detalle por jugador** — full per-participant audit: every scored match, prediction vs reality with point tags, advancement hits and bonus breakdown.
+
+Persistence: entered results auto-save to the browser's localStorage. Use **Guardar progreso / Cargar progreso** for an explicit JSON backup — do this before switching browser/computer or sharing the file. **Añadir participantes** can import an updated master workbook directly in the browser (needs internet once, for SheetJS); script-based injection is the preferred path.
+
+### Scoring rules encoded
+
+Exact score 4 · correct winner 2 · correct KO pairing (cruce) 3 — in knockouts the pairing must match for result/winner points · advancement per correct team: R32 2, R16 4, QF 6, SF 9, Final 13 · champion 18 · 1 pt per goal of each chosen goleador and of the Bota de Oro pick · Guante/Bota/Balón de Oro 7 each · third-place match awards no advancement points.
+
+---
+
+## Common workflows
+
+**New participant joins** — drop `Nombre.xlsx` into `./user_excels`, then:
+```bash
+python gather_predictions.py ./user_excels --inject porra_mundial_2026.html
+```
+
+**A participant corrects their file** — same command; their data is replaced.
+
+**Someone drops out**:
+```bash
+python gather_predictions.py --remove Nombre --inject porra_mundial_2026.html
+```
+(then delete `Nombre.xlsx` from the folder)
+
+**Roll back a bad merge** — every `--inject` leaves `porra_mundial_2026.html.bak`; copy it back over the file. Only the immediately previous version is kept.
+
+**Distribute an update** — send the friends the new HTML. Their browsers keep nothing important; all state that matters lives with the master.
+
+---
 
 ## Troubleshooting
 
-**`KeyError: 'config'` in the plotter** — old-schema CSV. Already handled
-in current code; if it still fires, verify the CSV header line contains
-the canonical columns. The plotter will inject `config="default"` and
-proceed.
-
-**`ERROR: not a directory` / `not found`** — pass either a results
-directory, a single CSV file, or a raw OSU output file. The error
-message lists all three options.
-
-**Failed runs at high ppn** — usually one of:
-- IB QP exhaustion → reduce ppn, or switch to `UCX_TLS=dc,sm,self`
-- Out of memory → check OSU's per-rank buffer requirements at large message sizes
-- Slurm task-launch timeout → increase `--time` in the SBATCH header
-
-When a `(config, ppn, collective)` combination fails, the driver logs
-the failure and continues with the next combination rather than aborting
-the whole job — so partial results are still useful.
-
-**Latency cliff appears at unexpected ppn** — useful debugging steps:
-
-1. Check the per-config `.env` files: confirm `UCX_TLS` / `UCC_CLS` got
-   set as intended.
-2. Rerun the suspect configuration with `UCC_LOG_LEVEL=info` to see
-   which TL and CL UCC actually selected.
-3. Compare the affected configuration's heatmap to a known-good one;
-   cliff patterns differ between QP-cache pressure, CCD-boundary
-   crossings, and algorithm switches.
-
-**Configuration not picked up** — check `configs.txt` for stray
-whitespace; the parser is fussy about the pipe-separated format. The
-driver echoes each configuration's `mca` and `env` strings at the start
-of the per-config block, so a misparse is visible in the job log.
-
-## Methodology notes
-
-**Why no hcoll** — assumes an UCX/UCC/OpenMPI stack built without
-Mellanox hcoll. The `configs.txt` and driver are designed accordingly;
-if you build OpenMPI with hcoll, you'd add `--mca coll_hcoll_enable 1`
-to the relevant config row and a `hcoll_*` configuration to the matrix.
-
-**Why these PPN values** — the default list deliberately includes
-boundaries that matter on modern CPUs: 1 (baseline single-rank), 8
-(one CCD on EPYC Genoa/Turin), 16, 32, 64, 96, 128 (typical IB QP-cache
-crossover region), and fully populated. Edit `PPN_LIST` to add your
-own CCD/NUMA boundaries.
-
-**Why effective bandwidth not raw bandwidth** — for collectives, the
-"bytes moved" depends on the algorithm. The plotter uses a per-collective
-data factor (`2(N-1)/N · S` for allreduce, `(N-1) · S` for allgather,
-etc.) that gives consistent comparisons across configurations even if
-they pick different underlying algorithms. It's a lower-bound estimate,
-not a precise model.
-
-**Why log-space cliff detection** — latency-vs-ppn curves are usually
-monotonically increasing, so a simple "biggest derivative" detector
-just reports the highest ppn every time. Detecting acceleration in
-log-log space catches the "smooth then sharp upturn" shape that
-characterises a real cliff.
-
-## Extending
-
-**Adding a new configuration** — append a line to `configs.txt`. No
-script changes needed.
-
-**Adding a new collective** — append to the `COLLECTIVES` array at the
-top of `run_osu_collectives_sweep.sh`. The plotter handles any
-`osu_*` name automatically.
-
-**Adding a new plot family** — write a `plot_xxx(df, ...)` function in
-`plot_osu_sweep.py`, call it from `plot_one()`, and add a `(name, [patterns])`
-entry to `family_order` in `build_index()` so the HTML index buckets it
-correctly. Order in `family_order` is significant: more specific
-patterns must come first.
-
-**Comparing two sweeps** — not yet built. A `compare_runs.py` that
-diffs two results directories and flags per-cell regressions is the
-obvious next addition; ask if it'd be useful.
-
-## License
-
-Internal benchmarking tooling. No specific license attached; treat as
-the property of whoever's filesystem you found it on.
+- **"missing sheet 'World Cup' / 'Matches'"** — wrong file (not the prediction template) or a renamed sheet. Fix the file; other inputs are unaffected.
+- **Knockout teams blank for one user** — almost always an unresolved KO draw earlier in their bracket; the validation report names the exact match.
+- **`--remove` says the name doesn't exist** — names are exact (file-stem) matches; copy it from the error's participant list or the leaderboard.
+- **Dashboard shows old data after injection** — hard-refresh (Ctrl+F5); you're looking at a cached copy.
+- **Scores vanished after opening the file elsewhere** — localStorage is per browser/computer. Restore with *Cargar progreso* from your JSON backup.
