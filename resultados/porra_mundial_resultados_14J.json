@@ -1,0 +1,85 @@
+{
+ "v": 2,
+ "state": {
+  "res": {
+   "1": {
+    "t1": null,
+    "t2": null,
+    "s1": 2,
+    "s2": 0,
+    "p1": null,
+    "p2": null
+   },
+   "2": {
+    "t1": null,
+    "t2": null,
+    "s1": 2,
+    "s2": 1,
+    "p1": null,
+    "p2": null
+   },
+   "3": {
+    "t1": null,
+    "t2": null,
+    "s1": 1,
+    "s2": 1,
+    "p1": null,
+    "p2": null
+   },
+   "4": {
+    "t1": null,
+    "t2": null,
+    "s1": 4,
+    "s2": 1,
+    "p1": null,
+    "p2": null
+   },
+   "5": {
+    "t1": null,
+    "t2": null,
+    "s1": 0,
+    "s2": 1,
+    "p1": null,
+    "p2": null
+   },
+   "6": {
+    "t1": null,
+    "t2": null,
+    "s1": 2,
+    "s2": 0,
+    "p1": null,
+    "p2": null
+   },
+   "7": {
+    "t1": null,
+    "t2": null,
+    "s1": 1,
+    "s2": 1,
+    "p1": null,
+    "p2": null
+   },
+   "8": {
+    "t1": null,
+    "t2": null,
+    "s1": 1,
+    "s2": 1,
+    "p1": null,
+    "p2": null
+   }
+  },
+  "goals": {
+   "vinicius junior": 1
+  },
+  "awards": {
+   "glove": "",
+   "ball": "",
+   "boot": ""
+  }
+ },
+ "extra": {
+  "users": [],
+  "preds": {},
+  "bonus": {},
+  "players": {}
+ }
+}
