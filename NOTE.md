@@ -1,0 +1,1 @@
+porra_mundial_2026_cruces_pases_por_ronda.html -> Este se uso durante mas de la mitad de la porra y funciono hasta el final. Tercer puesto no estaba en las normas y debe ser subsanado en los siguientes torneos.
